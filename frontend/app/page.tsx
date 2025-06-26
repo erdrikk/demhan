@@ -40,7 +40,7 @@ export default function Home() {
   const [player, setPlayer] = useState<{ id: string; name: string } | null>(null)
   const [showCreateRoom, setShowCreateRoom] = useState(false)
   const [currentRoomGameMode, setCurrentRoomGameMode] = useState("classic")
-
+  //comm
   useEffect(() => {
     const newSocket = io("https://demhan-7lgm.vercel.app")
     setSocket(newSocket)
