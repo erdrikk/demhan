@@ -42,7 +42,7 @@ export default function Home() {
   const [currentRoomGameMode, setCurrentRoomGameMode] = useState("classic")
   //comm
   useEffect(() => {
-    const newSocket = io("https://demhan-7lgm.vercel.app")
+    const newSocket = io("https://demhan-server.onrender.com")
     setSocket(newSocket)
 
     newSocket.on("connect", () => {
