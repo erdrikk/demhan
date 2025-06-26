@@ -1,10 +1,13 @@
 "use client"
 
+import React from "react"
+
 import { useState, useEffect } from "react"
-import { Card, CardContent } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Crown, Users, Plus, LogIn, Wifi } from "lucide-react"
+import { Badge } from "@/components/ui/badge"
+import { Crown, Users, Plus, RefreshCw, Gamepad2, Shield, Recycle } from "lucide-react"
 import { io, type Socket } from "socket.io-client"
 import GameRoom from "./components/GameRoom"
 
@@ -13,66 +16,75 @@ interface Room {
   name: string
   players: number
   maxPlayers: number
+  gameMode: string
 }
 
-interface Player {
-  id: string
-  name: string
+const GAME_MODES = {
+  classic: {
+    name: "Classic",
+    icon: Gamepad2,
+    description: "Original rules - 3 discards per game, max 3 cards per discard",
+  },
+  tactical: { name: "Experimental", icon: Shield, description: "Prediction system, armor building, and tactical combat" },
+  recycling: { name: "Redraw", icon: Recycle, description: "Discarded cards return to deck bottom - 150 HP" },
 }
 
-export default function DemonsHandLobby() {
+export default function Home() {
   const [socket, setSocket] = useState<Socket | null>(null)
-  const [connected, setConnected] = useState(false)
   const [playerName, setPlayerName] = useState("")
-  const [player, setPlayer] = useState<Player | null>(null)
+  const [isConnected, setIsConnected] = useState(false)
   const [rooms, setRooms] = useState<Room[]>([])
-  const [currentRoom, setCurrentRoom] = useState<string | null>(null)
   const [newRoomName, setNewRoomName] = useState("")
-  const [gameState, setGameState] = useState<"lobby" | "room" | "game">("lobby")
+  const [selectedGameMode, setSelectedGameMode] = useState("classic")
+  const [currentRoom, setCurrentRoom] = useState<string | null>(null)
+  const [player, setPlayer] = useState<{ id: string; name: string } | null>(null)
+  const [showCreateRoom, setShowCreateRoom] = useState(false)
+  const [currentRoomGameMode, setCurrentRoomGameMode] = useState("classic")
 
   useEffect(() => {
-    const newSocket = io("http://localhost:3001")
+    const newSocket = io("http://localhost:4545")
     setSocket(newSocket)
 
     newSocket.on("connect", () => {
-      setConnected(true)
+      setIsConnected(true)
       console.log("Connected to server")
     })
 
     newSocket.on("disconnect", () => {
-      setConnected(false)
+      setIsConnected(false)
       console.log("Disconnected from server")
     })
 
-    newSocket.on("playerSet", (playerData: Player) => {
-      setPlayer(playerData)
+    newSocket.on("playerSet", ({ id, name }) => {
+      setPlayer({ id, name })
+      console.log("Player set:", { id, name })
     })
 
     newSocket.on("roomsList", (roomsList: Room[]) => {
       setRooms(roomsList)
     })
 
-    newSocket.on("roomCreated", ({ roomId }: { roomId: string }) => {
-      setCurrentRoom(roomId)
-      setGameState("room")
-    })
-
-    newSocket.on("playerJoined", () => {
-      setGameState("room")
-    })
-
-    newSocket.on("gameStarted", () => {
-      setGameState("game")
-    })
-
     newSocket.on("roomsUpdated", () => {
-      if (gameState === "lobby") {
-        newSocket.emit("getRooms")
+      newSocket.emit("getRooms")
+    })
+
+    newSocket.on("roomCreated", ({ roomId, room }) => {
+      setCurrentRoom(roomId)
+      setCurrentRoomGameMode(room.gameMode || selectedGameMode)
+      setShowCreateRoom(false)
+      setNewRoomName("")
+      console.log("Room created with mode:", room.gameMode)
+    })
+
+    newSocket.on("playerJoined", ({ room }) => {
+      if (room.gameMode) {
+        setCurrentRoomGameMode(room.gameMode)
+        console.log("Updated room game mode:", room.gameMode)
       }
     })
 
-    newSocket.on("error", (message: string) => {
-      alert(message)
+    newSocket.on("error", (error) => {
+      alert(`Error: ${error}`)
     })
 
     return () => {
@@ -80,13 +92,7 @@ export default function DemonsHandLobby() {
     }
   }, [])
 
-  useEffect(() => {
-    if (socket && connected && gameState === "lobby") {
-      socket.emit("getRooms")
-    }
-  }, [socket, connected, gameState])
-
-  const handleSetName = () => {
+  const handleSetPlayerName = () => {
     if (socket && playerName.trim()) {
       socket.emit("setPlayerName", playerName.trim())
     }
@@ -94,15 +100,19 @@ export default function DemonsHandLobby() {
 
   const handleCreateRoom = () => {
     if (socket && newRoomName.trim()) {
-      socket.emit("createRoom", newRoomName.trim())
-      setNewRoomName("")
+      socket.emit("createRoom", { roomName: newRoomName.trim(), gameMode: selectedGameMode })
     }
   }
 
   const handleJoinRoom = (roomId: string) => {
     if (socket) {
-      setCurrentRoom(roomId)
+      const room = rooms.find((r) => r.id === roomId)
+      if (room) {
+        setCurrentRoomGameMode(room.gameMode)
+        console.log("Joining room with mode:", room.gameMode)
+      }
       socket.emit("joinRoom", roomId)
+      setCurrentRoom(roomId)
     }
   }
 
@@ -110,80 +120,31 @@ export default function DemonsHandLobby() {
     if (socket) {
       socket.emit("leaveRoom")
       setCurrentRoom(null)
-      setGameState("lobby")
+      setCurrentRoomGameMode("classic")
     }
   }
 
-  if (!connected) {
-    return (
-      <div className="min-h-screen bg-gradient-to-b from-purple-900 via-red-900 to-black flex items-center justify-center p-4">
-        <Card className="w-full max-w-md bg-black/50 border-red-500">
-          <CardContent className="p-8 text-center">
-            <Wifi className="w-12 h-12 mx-auto mb-4 text-red-400 animate-pulse" />
-            <h1 className="text-2xl font-bold text-red-400 mb-2">Connecting...</h1>
-            <p className="text-gray-300">Connecting to game server</p>
-          </CardContent>
-        </Card>
-      </div>
-    )
+  const refreshRooms = () => {
+    if (socket) {
+      socket.emit("getRooms")
+    }
   }
 
-  if (!player) {
+  useEffect(() => {
+    if (socket && player) {
+      socket.emit("getRooms")
+    }
+  }, [socket, player])
+
+  if (currentRoom && player) {
     return (
-      <div className="min-h-screen bg-gradient-to-b from-purple-900 via-red-900 to-black flex items-center justify-center p-4">
-        <Card className="w-full max-w-md bg-black/50 border-red-500">
-          <CardContent className="p-8">
-            <div className="text-center mb-6">
-              <Crown className="w-12 h-12 mx-auto mb-4 text-red-400" />
-              <h1 className="text-2xl font-bold text-red-400 mb-2">The Demon's Hand</h1>
-              <p className="text-gray-300">Enter your name to join</p>
-            </div>
-
-            <div className="space-y-4">
-              <Input
-                type="text"
-                placeholder="Enter your name"
-                value={playerName}
-                onChange={(e) => setPlayerName(e.target.value)}
-                onKeyPress={(e) => e.key === "Enter" && handleSetName()}
-                className="bg-gray-800 border-gray-600 text-white"
-              />
-              <Button
-                onClick={handleSetName}
-                disabled={!playerName.trim()}
-                className="w-full bg-red-600 hover:bg-red-700"
-              >
-                Join Game
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    )
-  }
-
-  if (gameState === "game" && currentRoom) {
-    return <GameRoom socket={socket} roomId={currentRoom} player={player} onLeave={handleLeaveRoom} />
-  }
-
-  if (gameState === "room") {
-    return (
-      <div className="min-h-screen bg-gradient-to-b from-purple-900 via-red-900 to-black flex items-center justify-center p-4">
-        <Card className="w-full max-w-md bg-black/50 border-red-500">
-          <CardContent className="p-8 text-center">
-            <Crown className="w-12 h-12 mx-auto mb-4 text-red-400" />
-            <h1 className="text-2xl font-bold text-red-400 mb-2">Waiting for Players</h1>
-            <p className="text-gray-300 mb-6">Waiting for another player to join...</p>
-            <div className="animate-pulse text-yellow-400 mb-6">
-              <Users className="w-8 h-8 mx-auto mb-2" />
-              <p>1/2 Players</p>
-            </div>
-            <Button onClick={handleLeaveRoom} className="bg-gray-600 hover:bg-gray-700">
-              Leave Room
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
+      <GameRoom
+        socket={socket}
+        roomId={currentRoom}
+        player={player}
+        onLeave={handleLeaveRoom}
+        gameMode={currentRoomGameMode}
+      />
     )
   }
 
@@ -192,83 +153,179 @@ export default function DemonsHandLobby() {
       <div className="max-w-4xl mx-auto">
         {/* Header */}
         <div className="text-center mb-8">
-          <Crown className="w-16 h-16 mx-auto mb-4 text-red-400" />
-          <h1 className="text-4xl font-bold text-red-400 mb-2">The Demon's Hand</h1>
-          <p className="text-gray-300">Multiplayer Poker Combat</p>
-          <p className="text-sm text-gray-400 mt-2">Welcome, {player.name}!</p>
-        </div>
-
-        {/* Create Room */}
-        <Card className="mb-6 bg-black/30 border-red-500">
-          <CardContent className="p-6">
-            <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
-              <Plus className="w-5 h-5" />
-              Create New Room
-            </h2>
-            <div className="flex gap-2">
-              <Input
-                type="text"
-                placeholder="Room name"
-                value={newRoomName}
-                onChange={(e) => setNewRoomName(e.target.value)}
-                onKeyPress={(e) => e.key === "Enter" && handleCreateRoom()}
-                className="flex-1 bg-gray-800 border-gray-600 text-white"
-              />
-              <Button onClick={handleCreateRoom} disabled={!newRoomName.trim()} className="bg-red-600 hover:bg-red-700">
-                Create
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Available Rooms */}
-        <Card className="bg-black/30 border-red-500">
-          <CardContent className="p-6">
-            <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
-              <Users className="w-5 h-5" />
-              Available Rooms
-            </h2>
-
-            {rooms.length === 0 ? (
-              <div className="text-center py-8">
-                <p className="text-gray-400">No rooms available</p>
-                <p className="text-sm text-gray-500 mt-2">Create a room to start playing!</p>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {rooms.map((room) => (
-                  <div
-                    key={room.id}
-                    className="flex items-center justify-between p-4 bg-gray-800/50 rounded-lg border border-gray-600"
-                  >
-                    <div>
-                      <h3 className="text-white font-semibold">{room.name}</h3>
-                      <p className="text-sm text-gray-400">
-                        {room.players}/{room.maxPlayers} players
-                      </p>
-                    </div>
-                    <Button
-                      onClick={() => handleJoinRoom(room.id)}
-                      disabled={room.players >= room.maxPlayers}
-                      className="bg-green-600 hover:bg-green-700 disabled:bg-gray-600"
-                    >
-                      <LogIn className="w-4 h-4 mr-2" />
-                      Join
-                    </Button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Connection Status */}
-        <div className="text-center mt-6">
-          <div className="flex items-center justify-center gap-2 text-green-400">
-            <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
-            <span className="text-sm">Connected to server</span>
+          <div className="flex items-center justify-center gap-3 mb-4">
+            <Crown className="w-12 h-12 text-red-400" />
+            <h1 className="text-4xl md:text-6xl font-bold text-red-400">Demon's Hand</h1>
+          </div>
+          <p className="text-gray-300 text-lg">A strategic poker-based combat card game</p>
+          <div className="flex items-center justify-center gap-2 mt-2">
+            <div className={`w-3 h-3 rounded-full ${isConnected ? "bg-green-500" : "bg-red-500"}`}></div>
+            <span className="text-sm text-gray-400">{isConnected ? "Connected to server" : "Disconnected"}</span>
           </div>
         </div>
+
+        {!player ? (
+          /* Player Name Setup */
+          <Card className="max-w-md mx-auto bg-black/50 border-red-500">
+            <CardHeader>
+              <CardTitle className="text-red-400 text-center">Enter Your Name</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Input
+                placeholder="Your name"
+                value={playerName}
+                onChange={(e) => setPlayerName(e.target.value)}
+                onKeyPress={(e) => e.key === "Enter" && handleSetPlayerName()}
+                className="bg-gray-800 border-gray-600 text-white"
+              />
+              <Button
+                onClick={handleSetPlayerName}
+                disabled={!playerName.trim() || !isConnected}
+                className="w-full bg-red-600 hover:bg-red-700"
+              >
+                Join Game
+              </Button>
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="space-y-6">
+            {/* Welcome Message */}
+            <Card className="bg-black/30 border-red-500">
+              <CardContent className="p-4 text-center">
+                <h2 className="text-xl text-white mb-2">Welcome, {player.name}!</h2>
+                <p className="text-gray-300">Choose a game mode and join or create a room to start playing.</p>
+              </CardContent>
+            </Card>
+
+            {/* Game Modes */}
+            <Card className="bg-black/30 border-purple-500">
+              <CardHeader>
+                <CardTitle className="text-purple-400 flex items-center gap-2">
+                  <Gamepad2 className="w-5 h-5" />
+                  Game Modes
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {Object.entries(GAME_MODES).map(([key, mode]) => {
+                    const IconComponent = mode.icon
+                    return (
+                      <Card
+                        key={key}
+                        className={`cursor-pointer transition-all ${
+                          selectedGameMode === key
+                            ? "bg-purple-600/30 border-purple-400"
+                            : "bg-gray-800/50 border-gray-600 hover:border-purple-500"
+                        }`}
+                        onClick={() => setSelectedGameMode(key)}
+                      >
+                        <CardContent className="p-4 text-center">
+                          <IconComponent className="w-8 h-8 mx-auto mb-2 text-purple-400" />
+                          <h3 className="text-white font-bold mb-1">{mode.name}</h3>
+                          <p className="text-gray-300 text-xs">{mode.description}</p>
+                        </CardContent>
+                      </Card>
+                    )
+                  })}
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Room Management */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Available Rooms */}
+              <Card className="bg-black/30 border-blue-500">
+                <CardHeader className="flex flex-row items-center justify-between">
+                  <CardTitle className="text-blue-400 flex items-center gap-2">
+                    <Users className="w-5 h-5" />
+                    Available Rooms
+                  </CardTitle>
+                  <Button onClick={refreshRooms} size="sm" className="bg-blue-600 hover:bg-blue-700">
+                    <RefreshCw className="w-4 h-4" />
+                  </Button>
+                </CardHeader>
+                <CardContent>
+                  {rooms.length === 0 ? (
+                    <p className="text-gray-400 text-center py-4">No rooms available</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {rooms.map((room) => (
+                        <div
+                          key={room.id}
+                          className="flex items-center justify-between p-3 bg-gray-800/50 rounded-lg border border-gray-600"
+                        >
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h3 className="text-white font-medium">{room.name}</h3>
+                              <Badge variant="outline" className="text-xs">
+                                {GAME_MODES[room.gameMode as keyof typeof GAME_MODES]?.name || room.gameMode}
+                              </Badge>
+                            </div>
+                            <p className="text-gray-400 text-sm">
+                              {room.players}/{room.maxPlayers} players
+                            </p>
+                          </div>
+                          <Button
+                            onClick={() => handleJoinRoom(room.id)}
+                            disabled={room.players >= room.maxPlayers}
+                            size="sm"
+                            className="bg-green-600 hover:bg-green-700"
+                          >
+                            Join
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Create Room */}
+              <Card className="bg-black/30 border-green-500">
+                <CardHeader>
+                  <CardTitle className="text-green-400 flex items-center gap-2">
+                    <Plus className="w-5 h-5" />
+                    Create New Room
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div>
+                    <label className="text-white text-sm mb-2 block">Room Name</label>
+                    <Input
+                      placeholder="Enter room name"
+                      value={newRoomName}
+                      onChange={(e) => setNewRoomName(e.target.value)}
+                      className="bg-gray-800 border-gray-600 text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-white text-sm mb-2 block">Selected Mode</label>
+                    <div className="p-3 bg-gray-800/50 rounded-lg border border-gray-600">
+                      <div className="flex items-center gap-2">
+                        {React.createElement(GAME_MODES[selectedGameMode as keyof typeof GAME_MODES].icon, {
+                          className: "w-5 h-5 text-purple-400",
+                        })}
+                        <span className="text-white font-medium">
+                          {GAME_MODES[selectedGameMode as keyof typeof GAME_MODES].name}
+                        </span>
+                      </div>
+                      <p className="text-gray-300 text-xs mt-1">
+                        {GAME_MODES[selectedGameMode as keyof typeof GAME_MODES].description}
+                      </p>
+                    </div>
+                  </div>
+                  <Button
+                    onClick={handleCreateRoom}
+                    disabled={!newRoomName.trim()}
+                    className="w-full bg-green-600 hover:bg-green-700"
+                  >
+                    Create Room
+                  </Button>
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

@@ -20,6 +20,29 @@ app.use(express.json())
 const rooms = new Map()
 const players = new Map()
 
+// Game modes
+const GAME_MODES = {
+  CLASSIC: "classic",
+  TACTICAL: "tactical",
+  RECYCLING: "recycling",
+}
+
+// Game mode configurations
+const GAME_MODE_CONFIG = {
+  [GAME_MODES.CLASSIC]: {
+    startingHealth: 100,
+    name: "Classic",
+  },
+  [GAME_MODES.TACTICAL]: {
+    startingHealth: 100,
+    name: "Tactical",
+  },
+  [GAME_MODES.RECYCLING]: {
+    startingHealth: 150, // Increased HP for longer games
+    name: "Recycling",
+  },
+}
+
 // Game logic functions
 function createDeck() {
   const suits = ["hearts", "diamonds", "clubs", "spades"]
@@ -60,9 +83,24 @@ function validateHand(cards) {
 
   const counts = Object.values(rankCounts).sort((a, b) => b - a)
   const isFlush = suits.every((suit) => suit === suits[0]) && cards.length === 5
-  const isStraight = cards.length === 5 && ranks[4] - ranks[0] === 4 && new Set(ranks).size === 5
-  const isLowStraight = cards.length === 5 && ranks.join(",") === "1,2,3,4,5" && new Set(ranks).size === 5
-  const isRoyal = isFlush && isStraight && ranks.join(",") === "1,10,11,12,13"
+
+  // Fixed straight validation
+  let isStraight = false
+  let isLowStraight = false
+  let isRoyal = false
+
+  if (cards.length === 5 && new Set(ranks).size === 5) {
+    // Check for low straight (A,2,3,4,5)
+    isLowStraight = ranks.join(",") === "1,2,3,4,5"
+
+    // Check for regular straight (consecutive ranks)
+    if (!isLowStraight) {
+      isStraight = ranks[4] - ranks[0] === 4
+    }
+
+    // Check for royal flush (A,10,J,Q,K) - note: this is the ONLY valid A-high straight
+    isRoyal = isFlush && ranks.join(",") === "1,10,11,12,13"
+  }
 
   switch (cards.length) {
     case 1:
@@ -141,9 +179,19 @@ function evaluateHand(cards) {
 
   const counts = Object.values(rankCounts).sort((a, b) => b - a)
   const isFlush = suits.every((suit) => suit === suits[0]) && cards.length === 5
-  const isStraight = cards.length === 5 && ranks[4] - ranks[0] === 4 && new Set(ranks).size === 5
-  const isLowStraight = cards.length === 5 && ranks.join(",") === "1,2,3,4,5" && new Set(ranks).size === 5
-  const isRoyal = isFlush && isStraight && ranks.join(",") === "1,10,11,12,13"
+
+  // Fixed straight evaluation
+  let isStraight = false
+  let isLowStraight = false
+  let isRoyal = false
+
+  if (cards.length === 5 && new Set(ranks).size === 5) {
+    isLowStraight = ranks.join(",") === "1,2,3,4,5"
+    if (!isLowStraight) {
+      isStraight = ranks[4] - ranks[0] === 4
+    }
+    isRoyal = isFlush && ranks.join(",") === "1,10,11,12,13"
+  }
 
   let handType = ""
   let baseDamage = 0
@@ -197,40 +245,58 @@ function startGame(roomId) {
     return
   }
 
-  console.log(`🎮 Starting game in room ${roomId}`)
+  console.log(`🎮 Starting ${room.gameMode} game in room ${roomId}`)
 
   const deck = createDeck()
+  const gameConfig = GAME_MODE_CONFIG[room.gameMode] || GAME_MODE_CONFIG[GAME_MODES.CLASSIC]
 
-  // Initialize players with game data
+  // Initialize players with game data based on game mode
   room.players.forEach((player, index) => {
-    player.health = 100
+    player.health = gameConfig.startingHealth
+    player.maxHealth = gameConfig.startingHealth
     player.hand = deck.slice(index * 8, (index + 1) * 8)
     player.selectedCards = []
+
+    // Updated discard limits: 3 total discards per game, max 3 cards per discard
     player.discardsUsed = 0
     player.maxDiscards = 3
+    player.maxCardsPerDiscard = 3
+
+    // Tactical mode specific - initialize for ALL players in tactical mode
+    if (room.gameMode === GAME_MODES.TACTICAL) {
+      player.armor = 0
+      player.prediction = null
+      player.parryCards = []
+    }
+
+    console.log(`🎯 Player ${player.name} initialized: HP=${player.health}, Mode=${room.gameMode}`)
   })
 
   room.gameState = "playing"
-  room.currentPlayer = 0
+  room.currentPlayer = Math.floor(Math.random() * 2)
+  console.log(`🎲 ${room.players[room.currentPlayer].name} goes first!`)
   room.turn = 1
-  room.deck = deck.slice(16) // Remaining cards after dealing
+  room.deck = deck.slice(16)
+
+  // Recycling mode specific
+  if (room.gameMode === GAME_MODES.RECYCLING) {
+    room.discardPile = []
+  }
 
   console.log("✅ Game started, emitting to room:", roomId)
-  console.log(
-    "📊 Players:",
-    room.players.map((p) => ({ id: p.id, name: p.name, handSize: p.hand.length })),
-  )
 
-  // Emit to all players in the room AND individually
-  const gameData = { room }
+  const gameData = {
+    room: {
+      ...room,
+      gameMode: room.gameMode, // Ensure game mode is included
+    },
+  }
 
-  // Broadcast to room
   io.to(roomId).emit("gameStarted", gameData)
 
-  // Also emit to each player individually as backup
   room.players.forEach((player) => {
     io.to(player.id).emit("gameStarted", gameData)
-    console.log(`📤 Sent gameStarted to player ${player.name} (${player.id})`)
+    console.log(`📤 Sent gameStarted to player ${player.name} (${player.id}) with mode ${room.gameMode}`)
   })
 
   console.log("🎯 Game initialization complete")
@@ -240,14 +306,12 @@ function startGame(roomId) {
 io.on("connection", (socket) => {
   console.log("User connected:", socket.id)
 
-  // Store player info
   socket.on("setPlayerName", (name) => {
     players.set(socket.id, { id: socket.id, name, roomId: null })
     socket.emit("playerSet", { id: socket.id, name })
     console.log(`Player ${name} (${socket.id}) set name`)
   })
 
-  // Get available rooms
   socket.on("getRooms", () => {
     const availableRooms = Array.from(rooms.values())
       .filter((room) => room.players.length < 2)
@@ -256,12 +320,12 @@ io.on("connection", (socket) => {
         name: room.name,
         players: room.players.length,
         maxPlayers: 2,
+        gameMode: room.gameMode,
       }))
     socket.emit("roomsList", availableRooms)
   })
 
-  // Create room
-  socket.on("createRoom", (roomName) => {
+  socket.on("createRoom", ({ roomName, gameMode = GAME_MODES.CLASSIC }) => {
     const roomId = uuidv4()
     const player = players.get(socket.id)
 
@@ -273,6 +337,7 @@ io.on("connection", (socket) => {
     const room = {
       id: roomId,
       name: roomName,
+      gameMode: gameMode,
       players: [player],
       gameState: "waiting",
       currentPlayer: 0,
@@ -288,10 +353,9 @@ io.on("connection", (socket) => {
     socket.emit("roomCreated", { roomId, room })
     io.emit("roomsUpdated")
 
-    console.log(`Room ${roomName} (${roomId}) created by ${player.name}`)
+    console.log(`Room ${roomName} (${roomId}) created by ${player.name} - Mode: ${gameMode}`)
   })
 
-  // Join room
   socket.on("joinRoom", (roomId) => {
     const room = rooms.get(roomId)
     const player = players.get(socket.id)
@@ -311,7 +375,6 @@ io.on("connection", (socket) => {
       return
     }
 
-    // Check if player is already in room
     if (room.players.find((p) => p.id === socket.id)) {
       socket.emit("error", "You are already in this room")
       return
@@ -321,27 +384,26 @@ io.on("connection", (socket) => {
     player.roomId = roomId
 
     socket.join(roomId)
-    console.log(`👥 Player ${player.name} joined room ${room.name} (${room.players.length}/2)`)
+    console.log(`👥 Player ${player.name} joined room ${room.name} (${room.players.length}/2) - Mode: ${room.gameMode}`)
 
-    // Emit to all players in room
-    io.to(roomId).emit("playerJoined", { player, room })
+    // Send room data with game mode to all players
+    io.to(roomId).emit("playerJoined", {
+      player,
+      room: {
+        ...room,
+        gameMode: room.gameMode, // Ensure game mode is included
+      },
+    })
     io.emit("roomsUpdated")
 
-    // Start game if room is full
     if (room.players.length === 2) {
       console.log("🎯 Room full, starting game in 2 seconds...")
-      console.log(
-        "👥 Both players:",
-        room.players.map((p) => ({ id: p.id, name: p.name })),
-      )
-
       setTimeout(() => {
         startGame(roomId)
-      }, 2000) // Delay to ensure all clients are ready
+      }, 2000)
     }
   })
 
-  // Game actions
   socket.on("selectCard", ({ roomId, cardId }) => {
     const room = rooms.get(roomId)
     const player = players.get(socket.id)
@@ -392,10 +454,29 @@ io.on("connection", (socket) => {
     const currentPlayer = room.players[playerIndex]
     const markedCards = currentPlayer.hand.filter((c) => c.markedForDiscard)
 
-    if (markedCards.length === 0 || markedCards.length > 5 || currentPlayer.discardsUsed >= 3) return
+    // Updated limits: max 3 cards per discard, 3 total discards per game
+    if (
+      markedCards.length === 0 ||
+      markedCards.length > currentPlayer.maxCardsPerDiscard ||
+      currentPlayer.discardsUsed >= currentPlayer.maxDiscards
+    )
+      return
 
-    // Remove marked cards and draw new ones
+    console.log(`🗑️ Player ${currentPlayer.name} discarding ${markedCards.length} cards`)
+
+    // Remove marked cards
     currentPlayer.hand = currentPlayer.hand.filter((c) => !c.markedForDiscard)
+
+    if (room.gameMode === GAME_MODES.RECYCLING) {
+      // In recycling mode, add discarded cards to discard pile
+      room.discardPile.push(
+        ...markedCards.map((card) => ({
+          ...card,
+          selected: false,
+          markedForDiscard: false,
+        })),
+      )
+    }
 
     const newCards = room.deck.splice(0, markedCards.length).map((card) => ({
       ...card,
@@ -406,17 +487,46 @@ io.on("connection", (socket) => {
     currentPlayer.hand.push(...newCards)
     currentPlayer.discardsUsed++
 
-    // Send updated game state to all players in room
+    console.log(`✅ Player ${currentPlayer.name} now has ${currentPlayer.hand.length} cards`)
+
     io.to(roomId).emit("gameStateUpdate", {
-      players: room.players.map((p) => ({
+      players: room.players.map((p, idx) => ({
         id: p.id,
         name: p.name,
         health: p.health,
+        maxHealth: p.maxHealth,
         handSize: p.hand.length,
         discardsUsed: p.discardsUsed,
         maxDiscards: p.maxDiscards,
+        maxCardsPerDiscard: p.maxCardsPerDiscard,
+        ...(room.gameMode === GAME_MODES.TACTICAL ? { armor: p.armor } : {}),
+        ...(idx === playerIndex ? { hand: p.hand } : {}),
       })),
     })
+  })
+
+  // Tactical mode: Prediction system
+  socket.on("makePrediction", ({ roomId, prediction }) => {
+    const room = rooms.get(roomId)
+    const player = players.get(socket.id)
+
+    if (!room || !player || room.gameMode !== GAME_MODES.TACTICAL) return
+
+    const playerIndex = room.players.findIndex((p) => p.id === socket.id)
+    const currentPlayer = room.players[playerIndex]
+
+    // Allow prediction only when it's NOT your turn (you can't predict your own hand)
+    if (playerIndex === room.currentPlayer) {
+      socket.emit("error", "You cannot predict your own hand")
+      return
+    }
+
+    currentPlayer.prediction = prediction
+
+    console.log(`🔮 ${currentPlayer.name} predicted: ${prediction}`)
+
+    // Broadcast to all players in the room
+    io.to(roomId).emit("predictionMade", { playerIndex, prediction })
   })
 
   socket.on("playHand", ({ roomId }) => {
@@ -440,31 +550,87 @@ io.on("connection", (socket) => {
     }
 
     const handResult = evaluateHand(currentPlayer.selectedCards)
+    let finalDamage = handResult.damage
+
+    // Tactical mode: Check prediction
+    if (room.gameMode === GAME_MODES.TACTICAL && enemyPlayer.prediction) {
+      console.log(`🎯 Checking prediction: ${enemyPlayer.prediction} vs actual: ${handResult.type}`)
+
+      if (enemyPlayer.prediction === handResult.type) {
+        finalDamage = Math.floor(finalDamage * 0.25) // 75% damage reduction
+        console.log(
+          `✅ ${enemyPlayer.name} correctly predicted ${handResult.type}! Damage reduced from ${handResult.damage} to ${finalDamage}`,
+        )
+      } else {
+        finalDamage = Math.floor(finalDamage * 1.25) // 25% extra damage
+        console.log(
+          `❌ ${enemyPlayer.name} incorrectly predicted ${enemyPlayer.prediction}, actual was ${handResult.type}. Damage increased from ${handResult.damage} to ${finalDamage}`,
+        )
+      }
+
+      // Reset prediction after use
+      enemyPlayer.prediction = null
+    }
+
+    // Tactical mode: Apply armor
+    if (room.gameMode === GAME_MODES.TACTICAL && enemyPlayer.armor > 0) {
+      const armorAbsorbed = Math.min(enemyPlayer.armor, finalDamage)
+      enemyPlayer.armor -= armorAbsorbed
+      finalDamage -= armorAbsorbed
+      console.log(
+        `🛡️ ${enemyPlayer.name}'s armor absorbed ${armorAbsorbed} damage. Remaining armor: ${enemyPlayer.armor}, Final damage: ${finalDamage}`,
+      )
+    }
 
     // Deal damage to enemy
-    enemyPlayer.health = Math.max(0, enemyPlayer.health - handResult.damage)
+    enemyPlayer.health = Math.max(0, enemyPlayer.health - finalDamage)
 
-    // Remove played cards
+    // Handle played cards based on game mode
+    const playedCards = currentPlayer.hand.filter((c) => c.selected)
     currentPlayer.hand = currentPlayer.hand.filter((c) => !c.selected)
-    const playedCount = currentPlayer.selectedCards.length
     currentPlayer.selectedCards = []
 
-    // Draw cards to get back to 8 cards total
-    const cardsNeeded = Math.max(0, 8 - currentPlayer.hand.length)
-    const newCards = room.deck.splice(0, cardsNeeded).map((card) => ({
+    if (room.gameMode === GAME_MODES.RECYCLING) {
+      // Add played cards to discard pile
+      room.discardPile.push(
+        ...playedCards.map((card) => ({
+          ...card,
+          selected: false,
+          markedForDiscard: false,
+        })),
+      )
+
+      // If deck is low, shuffle discard pile back in
+      if (room.deck.length < 8 && room.discardPile.length > 0) {
+        console.log(`♻️ Shuffling ${room.discardPile.length} cards back into deck`)
+
+        // Shuffle discard pile
+        for (let i = room.discardPile.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1))
+          ;[room.discardPile[i], room.discardPile[j]] = [room.discardPile[j], room.discardPile[i]]
+        }
+
+        // Add to bottom of deck
+        room.deck.push(...room.discardPile)
+        room.discardPile = []
+      }
+    }
+
+    // Draw NEW 8 cards (replace entire hand)
+    const newCards = room.deck.splice(0, 8).map((card) => ({
       ...card,
       selected: false,
       markedForDiscard: false,
     }))
 
-    currentPlayer.hand.push(...newCards)
+    currentPlayer.hand = newCards
 
-    room.lastPlayedHand = handResult
+    room.lastPlayedHand = { ...handResult, damage: finalDamage }
 
     // Check for game over
     if (enemyPlayer.health <= 0) {
       room.gameState = "ended"
-      io.to(roomId).emit("gameEnded", { winner: currentPlayer, handResult })
+      io.to(roomId).emit("gameEnded", { winner: currentPlayer, handResult: room.lastPlayedHand })
       return
     }
 
@@ -477,6 +643,141 @@ io.on("connection", (socket) => {
 
     io.to(roomId).emit("handPlayed", {
       playerIndex,
+      handResult: room.lastPlayedHand,
+      newCurrentPlayer: room.currentPlayer,
+      turn: room.turn,
+      players: room.players.map((p, idx) => ({
+        id: p.id,
+        name: p.name,
+        health: p.health,
+        maxHealth: p.maxHealth,
+        handSize: p.hand.length,
+        discardsUsed: p.discardsUsed,
+        maxDiscards: p.maxDiscards,
+        maxCardsPerDiscard: p.maxCardsPerDiscard,
+        ...(room.gameMode === GAME_MODES.TACTICAL ? { armor: p.armor, prediction: p.prediction } : {}),
+        ...(idx === playerIndex ? { hand: p.hand } : {}),
+      })),
+    })
+  })
+
+  // Tactical mode: Build armor
+  socket.on("buildArmor", ({ roomId }) => {
+    const room = rooms.get(roomId)
+    const player = players.get(socket.id)
+
+    if (!room || !player || room.gameMode !== GAME_MODES.TACTICAL || room.gameState !== "playing") return
+
+    const playerIndex = room.players.findIndex((p) => p.id === socket.id)
+
+    // Only allow armor building on your turn
+    if (playerIndex !== room.currentPlayer) {
+      socket.emit("error", "You can only build armor on your turn")
+      return
+    }
+
+    const currentPlayer = room.players[playerIndex]
+
+    if (currentPlayer.selectedCards.length === 0) {
+      socket.emit("error", "No cards selected")
+      return
+    }
+
+    const validation = validateHand(currentPlayer.selectedCards)
+    if (!validation.valid) {
+      socket.emit("invalidHand", validation.error)
+      return
+    }
+
+    // Calculate armor based on hand type
+    let armorGained = 0
+    const handResult = evaluateHand(currentPlayer.selectedCards)
+
+    switch (handResult.type) {
+      case "High Card":
+        armorGained = 2
+        break
+      case "One Pair":
+        armorGained = 5
+        break
+      case "Two Pair":
+        armorGained = 8
+        break
+      case "Three of a Kind":
+        armorGained = 12
+        break
+      case "Straight":
+        armorGained = 15
+        break
+      case "Flush":
+        armorGained = 18
+        break
+      case "Full House":
+        armorGained = 22
+        break
+      case "Four of a Kind":
+        armorGained = 25
+        break
+      case "Straight Flush":
+        armorGained = 30
+        break
+      case "Royal Flush":
+        armorGained = 35
+        break
+      default:
+        armorGained = 2
+        break
+    }
+
+    const oldArmor = currentPlayer.armor
+    currentPlayer.armor = Math.min(50, currentPlayer.armor + armorGained) // Max 50 armor
+    const actualArmorGained = currentPlayer.armor - oldArmor
+
+    console.log(
+      `🛡️ ${currentPlayer.name} built ${actualArmorGained} armor with ${handResult.type} (Total: ${currentPlayer.armor}/50)`,
+    )
+
+    // Handle played cards based on game mode
+    const playedCards = currentPlayer.hand.filter((c) => c.selected)
+    currentPlayer.hand = currentPlayer.hand.filter((c) => !c.selected)
+    currentPlayer.selectedCards = []
+
+    if (room.gameMode === GAME_MODES.RECYCLING) {
+      room.discardPile.push(
+        ...playedCards.map((card) => ({
+          ...card,
+          selected: false,
+          markedForDiscard: false,
+        })),
+      )
+
+      if (room.deck.length < 8 && room.discardPile.length > 0) {
+        console.log(`♻️ Shuffling ${room.discardPile.length} cards back into deck`)
+        for (let i = room.discardPile.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1))
+          ;[room.discardPile[i], room.discardPile[j]] = [room.discardPile[j], room.discardPile[i]]
+        }
+        room.deck.push(...room.discardPile)
+        room.discardPile = []
+      }
+    }
+
+    const newCards = room.deck.splice(0, 8).map((card) => ({
+      ...card,
+      selected: false,
+      markedForDiscard: false,
+    }))
+
+    currentPlayer.hand = newCards
+
+    // Switch turns
+    room.currentPlayer = 1 - room.currentPlayer
+    room.turn++
+    room.players[room.currentPlayer].discardsUsed = 0
+
+    io.to(roomId).emit("armorBuilt", {
+      playerIndex,
+      armorGained: actualArmorGained,
       handResult,
       newCurrentPlayer: room.currentPlayer,
       turn: room.turn,
@@ -484,16 +785,86 @@ io.on("connection", (socket) => {
         id: p.id,
         name: p.name,
         health: p.health,
+        maxHealth: p.maxHealth,
         handSize: p.hand.length,
         discardsUsed: p.discardsUsed,
         maxDiscards: p.maxDiscards,
-        // Send full hand data to the player who just played to update their UI
+        maxCardsPerDiscard: p.maxCardsPerDiscard,
+        armor: p.armor,
+        prediction: p.prediction,
         ...(idx === playerIndex ? { hand: p.hand } : {}),
       })),
     })
   })
 
-  // Leave room
+  // Rematch functionality
+  socket.on("requestRematch", ({ roomId }) => {
+    const room = rooms.get(roomId)
+    const player = players.get(socket.id)
+
+    if (!room || !player) return
+
+    socket.to(roomId).emit("rematchRequested", { playerName: player.name })
+    console.log(`🔄 ${player.name} requested rematch in room ${roomId}`)
+  })
+
+  socket.on("acceptRematch", ({ roomId }) => {
+    const room = rooms.get(roomId)
+    const player = players.get(socket.id)
+
+    if (!room || !player) return
+
+    console.log(`✅ ${player.name} accepted rematch in room ${roomId}`)
+
+    const deck = createDeck()
+    const gameConfig = GAME_MODE_CONFIG[room.gameMode] || GAME_MODE_CONFIG[GAME_MODES.CLASSIC]
+
+    room.players.forEach((player, index) => {
+      player.health = gameConfig.startingHealth
+      player.maxHealth = gameConfig.startingHealth
+      player.hand = deck.slice(index * 8, (index + 1) * 8)
+      player.selectedCards = []
+      player.discardsUsed = 0
+      player.maxDiscards = 3
+      player.maxCardsPerDiscard = 3
+
+      if (room.gameMode === GAME_MODES.TACTICAL) {
+        player.armor = 0
+        player.prediction = null
+        player.parryCards = []
+      }
+    })
+
+    room.gameState = "playing"
+    room.currentPlayer = Math.floor(Math.random() * 2)
+    console.log(`🎲 Rematch: ${room.players[room.currentPlayer].name} goes first!`)
+    room.turn = 1
+    room.deck = deck.slice(16)
+    room.lastPlayedHand = null
+
+    if (room.gameMode === GAME_MODES.RECYCLING) {
+      room.discardPile = []
+    }
+
+    io.to(roomId).emit("rematchAccepted", {
+      room: {
+        ...room,
+        gameMode: room.gameMode, // Ensure game mode is included
+      },
+    })
+    console.log(`🎮 Rematch started in room ${roomId}`)
+  })
+
+  socket.on("declineRematch", ({ roomId }) => {
+    const room = rooms.get(roomId)
+    const player = players.get(socket.id)
+
+    if (!room || !player) return
+
+    console.log(`❌ ${player.name} declined rematch in room ${roomId}`)
+    socket.to(roomId).emit("rematchDeclined")
+  })
+
   socket.on("leaveRoom", () => {
     const player = players.get(socket.id)
     if (player && player.roomId) {
@@ -514,7 +885,6 @@ io.on("connection", (socket) => {
     }
   })
 
-  // Disconnect
   socket.on("disconnect", () => {
     console.log("User disconnected:", socket.id)
 
@@ -538,7 +908,7 @@ io.on("connection", (socket) => {
   })
 })
 
-const PORT = process.env.PORT || 3001
+const PORT = process.env.PORT || 8080
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`)
 })
