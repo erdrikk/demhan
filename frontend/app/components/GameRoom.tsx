@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Heart, Spade, Diamond, Club, Crown, Trash2, RefreshCw, Menu, X, LogOut, Shield, Eye } from "lucide-react"
+import { Heart, Spade, Diamond, Club, Crown, Trash2, Shield, Eye, Zap, LogOut, Menu, X, ArrowDown01 } from "lucide-react"
 import type { Socket } from "socket.io-client"
 
 interface PlayingCard {
@@ -43,13 +43,13 @@ interface GameRoomProps {
 }
 
 const HAND_RANKINGS = {
-  "Royal Flush": { damage: 50, description: "A, K, Q, J, 10 of same suit" },
-  "Straight Flush": { damage: 40, description: "5 consecutive cards of same suit" },
-  "Four of a Kind": { damage: 35, description: "4 cards of same rank" },
-  "Full House": { damage: 30, description: "3 of a kind + pair" },
-  Flush: { damage: 25, description: "5 cards of same suit" },
-  Straight: { damage: 20, description: "5 consecutive cards" },
-  "Three of a Kind": { damage: 15, description: "3 cards of same rank" },
+  "Royal Flush": { damage: 150, description: "A, K, Q, J, 10 of same suit" },
+  "Straight Flush": { damage: 80, description: "5 consecutive cards of same suit" },
+  "Four of a Kind": { damage: 60, description: "4 cards of same rank" },
+  "Full House": { damage: 45, description: "3 of a kind + pair" },
+  Flush: { damage: 30, description: "5 cards of same suit" },
+  Straight: { damage: 25, description: "5 consecutive cards" },
+  "Three of a Kind": { damage: 20, description: "3 cards of same rank" },
   "Two Pair": { damage: 10, description: "2 pairs of different ranks" },
   "One Pair": { damage: 5, description: "2 cards of same rank" },
   "High Card": { damage: 1, description: "Highest card" },
@@ -57,11 +57,163 @@ const HAND_RANKINGS = {
 
 const HAND_TYPES = Object.keys(HAND_RANKINGS)
 
+// Damage calculation function (same as server)
+function calculateDamagePreview(cards: PlayingCard[]) {
+  if (cards.length === 0) return { type: "No Cards", damage: 0, valid: false }
+
+  // Validate hand first
+  const validation = validateHandPreview(cards)
+  if (!validation.valid) {
+    return { type: "Invalid", damage: 0, valid: false, error: validation.error }
+  }
+
+  const sortedCards = [...cards].sort((a, b) => a.rank - b.rank)
+  const ranks = sortedCards.map((c) => c.rank)
+  const suits = sortedCards.map((c) => c.suit)
+
+  // Calculate face value damage
+  const faceValueDamage = cards.reduce((total, card) => {
+    if (card.rank === 1) return total + 14
+    if (card.rank === 13) return total + 13
+    if (card.rank === 12) return total + 12
+    if (card.rank === 11) return total + 11
+    return total + card.rank
+  }, 0)
+
+  const rankCounts: { [key: number]: number } = {}
+  ranks.forEach((rank) => {
+    rankCounts[rank] = (rankCounts[rank] || 0) + 1
+  })
+
+  const counts = Object.values(rankCounts).sort((a, b) => b - a)
+  const isFlush = suits.every((suit) => suit === suits[0]) && cards.length === 5
+
+  // Straight evaluation
+  let isStraight = false
+  let isLowStraight = false
+  let isRoyal = false
+
+  if (cards.length === 5 && new Set(ranks).size === 5) {
+    isLowStraight = ranks.join(",") === "1,2,3,4,5"
+    if (!isLowStraight) {
+      isStraight = ranks[4] - ranks[0] === 4
+    }
+    isRoyal = isFlush && ranks.join(",") === "1,10,11,12,13"
+  }
+
+  let handType = ""
+  let baseDamage = 0
+
+  if (isRoyal) {
+    handType = "Royal Flush"
+    baseDamage = HAND_RANKINGS["Royal Flush"].damage
+  } else if (isFlush && (isStraight || isLowStraight)) {
+    handType = "Straight Flush"
+    baseDamage = HAND_RANKINGS["Straight Flush"].damage
+  } else if (counts[0] === 4) {
+    handType = "Four of a Kind"
+    baseDamage = HAND_RANKINGS["Four of a Kind"].damage
+  } else if (counts[0] === 3 && counts[1] === 2) {
+    handType = "Full House"
+    baseDamage = HAND_RANKINGS["Full House"].damage
+  } else if (isFlush) {
+    handType = "Flush"
+    baseDamage = HAND_RANKINGS["Flush"].damage
+  } else if (isStraight || isLowStraight) {
+    handType = "Straight"
+    baseDamage = HAND_RANKINGS["Straight"].damage
+  } else if (counts[0] === 3) {
+    handType = "Three of a Kind"
+    baseDamage = HAND_RANKINGS["Three of a Kind"].damage
+  } else if (counts[0] === 2 && counts[1] === 2) {
+    handType = "Two Pair"
+    baseDamage = HAND_RANKINGS["Two Pair"].damage
+  } else if (counts[0] === 2) {
+    handType = "One Pair"
+    baseDamage = HAND_RANKINGS["One Pair"].damage
+  } else {
+    handType = "High Card"
+    baseDamage = HAND_RANKINGS["High Card"].damage
+  }
+
+  const totalDamage = baseDamage + faceValueDamage
+
+  return {
+    type: handType,
+    damage: totalDamage,
+    valid: true,
+    baseDamage,
+    faceValueDamage,
+  }
+}
+
+function validateHandPreview(cards: PlayingCard[]) {
+  if (cards.length === 0) return { valid: false, error: "No cards selected" }
+
+  const sortedCards = [...cards].sort((a, b) => a.rank - b.rank)
+  const ranks = sortedCards.map((c) => c.rank)
+  const suits = sortedCards.map((c) => c.suit)
+
+  const rankCounts: { [key: number]: number } = {}
+  ranks.forEach((rank) => {
+    rankCounts[rank] = (rankCounts[rank] || 0) + 1
+  })
+
+  const counts = Object.values(rankCounts).sort((a, b) => b - a)
+  const isFlush = suits.every((suit) => suit === suits[0]) && cards.length === 5
+
+  let isStraight = false
+  let isLowStraight = false
+  let isRoyal = false
+
+  if (cards.length === 5 && new Set(ranks).size === 5) {
+    isLowStraight = ranks.join(",") === "1,2,3,4,5"
+    if (!isLowStraight) {
+      isStraight = ranks[4] - ranks[0] === 4
+    }
+    isRoyal = isFlush && ranks.join(",") === "1,10,11,12,13"
+  }
+
+  switch (cards.length) {
+    case 1:
+      return { valid: true }
+    case 2:
+      if (counts[0] !== 2) {
+        return { valid: false, error: "Two cards must be a pair (same rank)" }
+      }
+      return { valid: true }
+    case 3:
+      if (counts[0] !== 3) {
+        return { valid: false, error: "Three cards must be three of a kind (same rank)" }
+      }
+      return { valid: true }
+    case 4:
+      if (counts[0] === 4) {
+        return { valid: true }
+      }
+      if (counts[0] === 2 && counts[1] === 2) {
+        return { valid: true }
+      }
+      return {
+        valid: false,
+        error: "Four cards must be either four of a kind or two pair",
+      }
+    case 5:
+      if (isRoyal) return { valid: true }
+      if (isFlush && (isStraight || isLowStraight)) return { valid: true }
+      if (counts[0] === 3 && counts[1] === 2) return { valid: true }
+      if (isFlush) return { valid: true }
+      if (isStraight || isLowStraight) return { valid: true }
+      return { valid: false, error: "5 cards must form: Straight, Flush, Full House, Straight Flush, or Royal Flush" }
+    default:
+      return { valid: false, error: `Invalid number of cards: ${cards.length}. Play 1, 2, 3, 4, or 5 cards only.` }
+  }
+}
+
 export default function GameRoom({ socket, roomId, player, onLeave, gameMode }: GameRoomProps) {
   const [players, setPlayers] = useState<GamePlayer[]>([])
   const [currentPlayer, setCurrentPlayer] = useState(0)
   const [turn, setTurn] = useState(1)
-  const [discardMode, setDiscardMode] = useState(false)
   const [showRankings, setShowRankings] = useState(false)
   const [lastPlayedHand, setLastPlayedHand] = useState<HandResult | null>(null)
   const [gameEnded, setGameEnded] = useState(false)
@@ -73,13 +225,17 @@ export default function GameRoom({ socket, roomId, player, onLeave, gameMode }: 
   const [selectedPrediction, setSelectedPrediction] = useState<string>("")
   const [showPredictionModal, setShowPredictionModal] = useState(false)
   const [currentGameMode, setCurrentGameMode] = useState(gameMode)
+  const [sortBy, setSortBy] = useState<"none" | "suit" | "value">("none")
 
   const myPlayerIndex = players.findIndex((p) => p.id === player.id)
   const isMyTurn = currentPlayer === myPlayerIndex
   const myPlayer = players[myPlayerIndex]
   const enemyPlayer = players.find((p) => p.id !== player.id)
 
-  // Update tactical mode when game mode changes
+  // Calculate damage preview for selected cards
+  const damagePreview = myPlayer ? calculateDamagePreview(myPlayer.selectedCards) : null
+
+  // Update game mode states when game mode changes
   useEffect(() => {
     console.log("🎮 Game mode updated:", currentGameMode)
     setTacticalMode(currentGameMode === "tactical")
@@ -101,10 +257,15 @@ export default function GameRoom({ socket, roomId, player, onLeave, gameMode }: 
         roomId: room.id,
         gameMode: room.gameMode,
         playersCount: room.players?.length,
-        players: room.players?.map((p) => ({ id: p.id, name: p.name, handSize: p.hand?.length, health: p.health })),
+        players: room.players?.map((p) => ({
+          id: p.id,
+          name: p.name,
+          handSize: p.hand?.length,
+          health: p.health,
+        })),
       })
 
-      if (room.players && room.players.length === 2) {
+      if (room.players && room.players.length >= 1) {
         setPlayers(room.players)
         setCurrentPlayer(room.currentPlayer || 0)
         setTurn(room.turn || 1)
@@ -133,7 +294,7 @@ export default function GameRoom({ socket, roomId, player, onLeave, gameMode }: 
             maxHealth: p.maxHealth || 100,
             discardsUsed: p.discardsUsed || 0,
             maxDiscards: p.maxDiscards || 3,
-            maxCardsPerDiscard: p.maxCardsPerDiscard || 3,
+            maxCardsPerDiscard: p.maxCardsPerDiscard || 5,
             armor: p.armor || 0,
           })),
         )
@@ -149,17 +310,6 @@ export default function GameRoom({ socket, roomId, player, onLeave, gameMode }: 
         if (card) {
           card.selected = selected
           newPlayers[playerIndex].selectedCards = newPlayers[playerIndex].hand.filter((c) => c.selected)
-        }
-        return newPlayers
-      })
-    })
-
-    socket.on("cardMarkedForDiscard", ({ playerIndex, cardId, marked }) => {
-      setPlayers((prev) => {
-        const newPlayers = [...prev]
-        const card = newPlayers[playerIndex]?.hand.find((c) => c.id === cardId)
-        if (card) {
-          card.markedForDiscard = marked
         }
         return newPlayers
       })
@@ -182,7 +332,6 @@ export default function GameRoom({ socket, roomId, player, onLeave, gameMode }: 
           }
         })
       })
-      setDiscardMode(false)
     })
 
     socket.on("handPlayed", ({ playerIndex, handResult, newCurrentPlayer, turn: newTurn, players: updatedPlayers }) => {
@@ -286,7 +435,6 @@ export default function GameRoom({ socket, roomId, player, onLeave, gameMode }: 
       setGameEnded(false)
       setWinner(null)
       setLastPlayedHand(null)
-      setDiscardMode(false)
       setRematchRequested(false)
       setWaitingForRematch(false)
       console.log("🔄 Rematch accepted with mode:", room.gameMode)
@@ -303,7 +451,6 @@ export default function GameRoom({ socket, roomId, player, onLeave, gameMode }: 
       socket.off("gameStarted")
       socket.off("playerJoined")
       socket.off("cardSelected")
-      socket.off("cardMarkedForDiscard")
       socket.off("gameStateUpdate")
       socket.off("handPlayed")
       socket.off("armorBuilt")
@@ -318,16 +465,42 @@ export default function GameRoom({ socket, roomId, player, onLeave, gameMode }: 
     }
   }, [socket, onLeave, player.name])
 
+  const sortCards = (cards:PlayingCard[], sortType: "none" | "suit" | "value") => {
+    if (sortType==="none") return cards
+
+    const cardCopy = [...cards]
+
+    if(sortType === "suit"){
+      const suitOrder = { spades: 0, hearts: 1, diamonds: 2, clubs: 3}
+      return cardCopy.sort((a,b)=>{
+        if(suitOrder[a.suit] !== suitOrder[b.suit]){
+          return suitOrder[a.suit] - suitOrder[b.suit]
+        }
+        return a.rank - b.rank
+      })
+    }
+
+    if(sortType === "value"){
+      return cardCopy.sort((a, b)=>{
+        const aValue = a.rank === 1 ? 14 : a.rank
+        const bValue = b.rank === 1 ? 14 : b.rank
+        return aValue - bValue
+      })
+    }
+
+    return cards
+  }
+
   const getSuitIcon = (suit: string) => {
     switch (suit) {
       case "hearts":
-        return <Heart className="w-3 h-3 sm:w-4 sm:h-4 text-red-500" />
+        return <Heart className="w-4 h-4 sm:w-4 sm:h-4 text-red-500" strokeWidth={3} />
       case "diamonds":
-        return <Diamond className="w-3 h-3 sm:w-4 sm:h-4 text-red-500" />
+        return <Diamond className="w-4 h-4 sm:w-4 sm:h-4 text-red-500" strokeWidth={3} />
       case "clubs":
-        return <Club className="w-3 h-3 sm:w-4 sm:h-4 text-black" />
+        return <Club className="w-4 h-4 sm:w-4 sm:h-4 text-black" strokeWidth={3} />
       case "spades":
-        return <Spade className="w-3 h-3 sm:w-4 sm:h-4 text-black" />
+        return <Spade className="w-4 h-4 sm:w-4 sm:h-4 text-black" strokeWidth={3} />
       default:
         return null
     }
@@ -350,17 +523,7 @@ export default function GameRoom({ socket, roomId, player, onLeave, gameMode }: 
 
   const handleCardClick = (cardId: string) => {
     if (!socket || !isMyTurn) return
-
-    if (discardMode) {
-      socket.emit("markForDiscard", { roomId, cardId })
-    } else {
-      socket.emit("selectCard", { roomId, cardId })
-    }
-  }
-
-  const handleDiscard = () => {
-    if (!socket || !isMyTurn) return
-    socket.emit("discardCards", { roomId })
+    socket.emit("selectCard", { roomId, cardId })
   }
 
   const handlePlayHand = () => {
@@ -421,8 +584,6 @@ export default function GameRoom({ socket, roomId, player, onLeave, gameMode }: 
     )
   }
 
-  const markedForDiscardCount = myPlayer.hand.filter((card) => card.markedForDiscard).length
-
   return (
     <div className="min-h-screen bg-gradient-to-b from-purple-900 via-red-900 to-black p-2 sm:p-4">
       {/* Header */}
@@ -430,13 +591,13 @@ export default function GameRoom({ socket, roomId, player, onLeave, gameMode }: 
         <div className="text-white">
           <h1 className="text-lg sm:text-2xl font-bold text-red-400 flex items-center gap-2">
             <Crown className="w-4 h-4 sm:w-6 sm:h-6" />
-            Demon's Hand
+            The Demon's Hand
             {tacticalMode && <Shield className="w-4 h-4 sm:w-5 sm:h-5 text-blue-400" />}
             {currentGameMode === "recycling" && <span className="text-green-400 text-sm">♻️</span>}
           </h1>
           <div className="flex justify-between items-center text-xs sm:text-sm">
             <p>
-              Turn {turn} - {isMyTurn ? "Your Turn" : `${enemyPlayer.name}'s Turn`}
+              Turn {turn} - {isMyTurn ? "Your Turn" : `${enemyPlayer?.name || "Opponent"}'s Turn`}
             </p>
             <p className="text-gray-300">
               Discards: {myPlayer.discardsUsed}/{myPlayer.maxDiscards} (max {myPlayer.maxCardsPerDiscard}/turn)
@@ -466,58 +627,6 @@ export default function GameRoom({ socket, roomId, player, onLeave, gameMode }: 
           </Button>
         </div>
       </div>
-
-      {/* Action Buttons */}
-      {isMyTurn && (
-        <div className="flex flex-col sm:flex-row gap-2 mb-3 sm:mb-4">
-          {!discardMode ? (
-            <>
-              <Button
-                onClick={() => setDiscardMode(true)}
-                disabled={myPlayer.discardsUsed >= myPlayer.maxDiscards}
-                className="flex-1 bg-orange-600 hover:bg-orange-700 text-xs sm:text-sm px-2 py-1 sm:px-4 sm:py-2"
-              >
-                <Trash2 className="w-3 h-3 sm:w-4 sm:h-4 mr-1 sm:mr-2" />
-                Discard
-              </Button>
-              {tacticalMode && (
-                <Button
-                  onClick={handleBuildArmor}
-                  disabled={myPlayer.selectedCards.length === 0}
-                  className="flex-1 bg-blue-600 hover:bg-blue-700 text-xs sm:text-sm px-2 py-1 sm:px-4 sm:py-2"
-                >
-                  <Shield className="w-3 h-3 sm:w-4 sm:h-4 mr-1 sm:mr-2" />
-                  Build Armor ({myPlayer.selectedCards.length})
-                </Button>
-              )}
-              <Button
-                onClick={handlePlayHand}
-                disabled={myPlayer.selectedCards.length === 0}
-                className="flex-1 bg-red-600 hover:bg-red-700 text-xs sm:text-sm px-2 py-1 sm:px-4 sm:py-2"
-              >
-                Attack ({myPlayer.selectedCards.length} cards)
-              </Button>
-            </>
-          ) : (
-            <>
-              <Button
-                onClick={() => setDiscardMode(false)}
-                className="flex-1 bg-gray-600 hover:bg-gray-700 text-xs sm:text-sm px-2 py-1 sm:px-4 sm:py-2"
-              >
-                Cancel
-              </Button>
-              <Button
-                onClick={handleDiscard}
-                disabled={markedForDiscardCount === 0 || markedForDiscardCount > myPlayer.maxCardsPerDiscard}
-                className="flex-1 bg-green-600 hover:bg-green-700 text-xs sm:text-sm px-2 py-1 sm:px-4 sm:py-2"
-              >
-                <RefreshCw className="w-3 h-3 sm:w-4 sm:h-4 mr-1 sm:mr-2" />
-                Discard ({markedForDiscardCount}/{myPlayer.maxCardsPerDiscard})
-              </Button>
-            </>
-          )}
-        </div>
-      )}
 
       {/* Hand Rankings */}
       {(showRankings || (typeof window !== "undefined" && window.innerWidth >= 640)) && (
@@ -572,14 +681,14 @@ export default function GameRoom({ socket, roomId, player, onLeave, gameMode }: 
           <CardContent className="p-2 sm:p-4">
             <div className="flex items-center justify-between">
               <span className="text-white font-bold text-xs sm:text-base">
-                {enemyPlayer.name} {!isMyTurn && "(Their Turn)"}
+                {enemyPlayer?.name || "Opponent"} {!isMyTurn && "(Their Turn)"}
               </span>
               <div className="flex items-center gap-1 sm:gap-2">
                 <Heart className="w-3 h-3 sm:w-4 sm:h-4 text-red-400" />
                 <span className="text-white text-sm sm:text-xl">
-                  {enemyPlayer.health}/{enemyPlayer.maxHealth || 100}
+                  {enemyPlayer?.health || 0}/{enemyPlayer?.maxHealth || 100}
                 </span>
-                {tacticalMode && enemyPlayer.armor > 0 && (
+                {tacticalMode && enemyPlayer?.armor > 0 && (
                   <>
                     <Shield className="w-3 h-3 sm:w-4 sm:h-4 text-blue-400" />
                     <span className="text-blue-400 text-sm sm:text-xl">{enemyPlayer.armor}</span>
@@ -590,59 +699,35 @@ export default function GameRoom({ socket, roomId, player, onLeave, gameMode }: 
             <div className="w-full bg-gray-700 rounded-full h-1 sm:h-2 mt-1 sm:mt-2">
               <div
                 className="bg-red-500 h-1 sm:h-2 rounded-full transition-all duration-300"
-                style={{ width: `${(enemyPlayer.health / (enemyPlayer.maxHealth || 100)) * 100}%` }}
+                style={{ width: `${((enemyPlayer?.health || 0) / (enemyPlayer?.maxHealth || 100)) * 100}%` }}
               ></div>
             </div>
-            {tacticalMode && enemyPlayer.prediction && (
+            {tacticalMode && enemyPlayer?.prediction && (
               <div className="text-purple-400 text-xs mt-1">Their Prediction: {enemyPlayer.prediction}</div>
             )}
           </CardContent>
         </Card>
       </div>
 
-      {/* Last Played Hand */}
-      {lastPlayedHand && (
-        <Card className="mb-3 sm:mb-4 bg-yellow-900/30 border-yellow-500">
-          <CardContent className="p-2 sm:p-4 text-center">
-            <div className="text-yellow-400 font-bold text-sm sm:text-lg">
-              {lastPlayedHand.type} - {lastPlayedHand.damage} DMG!
-            </div>
-            <div className="text-gray-300 text-xs sm:text-sm">{lastPlayedHand.description}</div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Discard Instructions */}
-      {discardMode && isMyTurn && (
-        <Card className="mb-3 sm:mb-4 bg-orange-900/30 border-orange-500">
-          <CardContent className="p-2 sm:p-4 text-center">
-            <div className="text-orange-400 font-bold text-xs sm:text-base">
-              Select up to {myPlayer.maxCardsPerDiscard} cards to discard
-            </div>
-            <div className="text-gray-300 text-xs">
-              {myPlayer.maxDiscards - myPlayer.discardsUsed} discards left this game
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
       {/* My Hand */}
       <div className="mb-4 sm:mb-6">
-        <h3 className="text-white font-bold mb-2 text-sm sm:text-base">Your Hand ({myPlayer.hand.length})</h3>
-        <div className="flex gap-1 sm:gap-2 overflow-x-auto pt-2">
-          {myPlayer.hand.map((card) => (
+        <div className=" flex justify-between items-center"><h3 className="text-white font-bold mb-2 text-sm sm:text-base">Your Hand ({myPlayer.hand.length})</h3>
+        <div className=" flex gap-1 mb-2">
+          <Button onClick={()=>setSortBy(sortBy==="suit"?"none":"suit")} className={`${sortBy === "suit" ? 'bg-green-600 hover:bg-green-700' : 'bg-gray-600 hover:bg-gray-700'}`}>
+            <svg fill="#000000" viewBox="0 0 32 32" version="1.1" xmlns="http://www.w3.org/2000/svg"><g id="SVGRepo_bgCarrier" strokeWidth="0"></g><g id="SVGRepo_tracerCarrier" stroke-linecap="round" stroke-linejoin="round"></g><g id="SVGRepo_iconCarrier"> <title>suits</title> <path d="M15.887 12.424c0.515-1.922 5.998-4.38 5.888-7.88-0.108-3.449-4.153-4.34-5.888-1.334-1.694-2.934-6.018-2.173-5.906 1.334 0.117 3.652 5.343 5.781 5.906 7.88zM10.549 24.249l5.334 6.561 5.334-6.561-5.334-6.561zM30.882 15.493c-0.105-3.291-5.321-7.1-5.321-7.1s-5.404 3.947-5.305 7.1c0.085 2.696 2.839 3.657 4.588 2.095l-1.533 3.672 4.516-0-1.534-3.675c1.773 1.523 4.677 0.642 4.589-2.092zM11.923 15.73c0-1.53-1.221-2.787-2.752-2.787-0.131 0-0.257 0.017-0.383 0.035 0.367-0.47 0.592-1.064 0.592-1.707 0-1.53-1.221-2.752-2.752-2.752s-2.786 1.221-2.786 2.752c0 0.638 0.23 1.238 0.592 1.707-0.115-0.014-0.229-0.035-0.348-0.035-1.53 0-2.787 1.256-2.787 2.787s1.256 2.786 2.787 2.786c0.624 0 1.201-0.21 1.665-0.561l-1.398 3.348 4.516-0-1.419-3.398c0.474 0.379 1.073 0.61 1.721 0.61 1.53 0 2.752-1.256 2.752-2.787zM6.629 8.52h0z"></path> </g></svg>
+          </Button>
+          <Button onClick={()=>setSortBy(sortBy==="value"?"none":"value")} className={`${sortBy === "value" ? 'bg-green-600 hover:bg-green-700' : 'bg-gray-600 hover:bg-gray-700'}`}><ArrowDown01 className=" text-black"/></Button>
+        </div></div>
+        <div className="flex gap-1 sm:gap-2 overflow-x-auto pb-2 items-center justify-center">
+          {sortCards(myPlayer.hand, sortBy).map((card) => (
             <Card
               key={card.id}
-              className={`min-w-[50px] sm:min-w-[80px] cursor-pointer transition-all duration-200 ${
+              className={`min-w-[60px] py-2 sm:py-2 sm:min-w-[70px] cursor-pointer transition-all duration-200 ${
                 !isMyTurn
-                  ? "bg-[conic-gradient(at_bottom_left,_var(--tw-gradient-stops))] from-orange-300/75 via-orange-200/75 to-orange-100/75 hover:bg-red-100/75 opacity-50 cursor-not-allowed"
-                  : discardMode
-                    ? card.markedForDiscard
-                      ? "bg-red-600 border-red-400 transform -translate-y-1 sm:-translate-y-2"
-                      : "bg-[conic-gradient(at_bottom_left,_var(--tw-gradient-stops))] from-orange-300 via-orange-200 to-orange-100 hover:bg-red-100"
-                    : card.selected
-                      ? "bg-yellow-600 border-yellow-400 transform -translate-y-1 sm:-translate-y-2"
-                      : "bg-[conic-gradient(at_bottom_left,_var(--tw-gradient-stops))] from-orange-300 via-orange-200 to-orange-100 hover:bg-gray-100"
+                  ? "opacity-50 cursor-not-allowed"
+                  : card.selected
+                    ? "bg-yellow-600 border-yellow-400 transform -translate-y-1 sm:-translate-y-2"
+                    : "bg-white hover:bg-gray-100 "
               }`}
               onClick={() => handleCardClick(card.id)}
             >
@@ -655,21 +740,83 @@ export default function GameRoom({ socket, roomId, player, onLeave, gameMode }: 
         </div>
       </div>
 
-      {/* Enemy Hand */}
-      <div>
-        <h3 className="text-white font-bold mb-2 text-sm sm:text-base">
-          {enemyPlayer.name}'s Hand ({enemyPlayer.hand.length})
-        </h3>
-        <div className="flex gap-1 sm:gap-2 overflow-x-auto">
-          {enemyPlayer.hand.map((_, index) => (
-            <Card key={index} className="min-w-[50px] sm:min-w-[80px] aspect-[9.8/10] bg-gray-800 border-gray-600">
-              <CardContent className="p-2 sm:p-3 text-center h-full flex items-center justify-center">
-                <div className="text-lg sm:text-2xl">🂠</div>
-              </CardContent>
-            </Card>
-          ))}
+      {/* Damage Preview */}
+      {isMyTurn && myPlayer.selectedCards.length > 0 && damagePreview && (
+        <Card className="mb-3 sm:mb-4 bg-yellow-900/30 border-yellow-500">
+          <CardContent className="p-2 sm:p-4 text-center">
+            <div className="flex items-center justify-center gap-2">
+              <Zap className="w-4 h-4 text-yellow-400" />
+              <div className="text-yellow-400 font-bold text-sm sm:text-lg">
+                {damagePreview.valid ? (
+                  <>
+                    {damagePreview.type} - {damagePreview.damage} DMG
+                    <span className="text-xs ml-2">
+                      (Base: {damagePreview.baseDamage} + Face: {damagePreview.faceValueDamage})
+                    </span>
+                  </>
+                ) : (
+                  <span className="text-red-400">{damagePreview.error || "Invalid Hand"}</span>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Action Buttons */}
+      {isMyTurn && (
+        <div className="flex flex-col sm:flex-row gap-2 mb-3 sm:mb-4">
+          {myPlayer.selectedCards.length > 0 ? (
+            // Show options when cards are selected
+            <>
+              <Button
+                onClick={handlePlayHand}
+                className="flex-1 bg-red-600 hover:bg-red-700 text-xs sm:text-sm px-2 py-1 sm:px-4 sm:py-2"
+              >
+                Attack ({myPlayer.selectedCards.length} cards)
+              </Button>
+              {tacticalMode && (
+                <Button
+                  onClick={handleBuildArmor}
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 text-xs sm:text-sm px-2 py-1 sm:px-4 sm:py-2"
+                >
+                  <Shield className="w-3 h-3 sm:w-4 sm:h-4 mr-1 sm:mr-2" />
+                  Build Armor
+                </Button>
+              )}
+              <Button
+                onClick={() => {
+                  if (!socket) return
+                  socket.emit("discardCards", { roomId })
+                }}
+                disabled={
+                  myPlayer.discardsUsed >= myPlayer.maxDiscards ||
+                  myPlayer.selectedCards.length > myPlayer.maxCardsPerDiscard
+                }
+                className="flex-1 bg-orange-600 hover:bg-orange-700 text-xs sm:text-sm px-2 py-1 sm:px-4 sm:py-2"
+              >
+                <Trash2 className="w-3 h-3 sm:w-4 sm:h-4 mr-1 sm:mr-2" />
+                Discard ({myPlayer.selectedCards.length}/{myPlayer.maxCardsPerDiscard})
+              </Button>
+            </>
+          ) : (
+            <>
+            </>
+          )}
         </div>
-      </div>
+      )}
+
+      {/* Last Played Hand */}
+      {lastPlayedHand && (
+        <Card className="mb-3 sm:mb-4 bg-yellow-900/30 border-yellow-500">
+          <CardContent className="p-2 sm:p-4 text-center">
+            <div className="text-yellow-400 font-bold text-sm sm:text-lg">
+              {lastPlayedHand.type} - {lastPlayedHand.damage} DMG!
+            </div>
+            <div className="text-gray-300 text-xs sm:text-sm">{lastPlayedHand.description}</div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Prediction Modal */}
       {showPredictionModal && (

@@ -23,10 +23,10 @@ const GAME_MODES = {
   classic: {
     name: "Classic",
     icon: Gamepad2,
-    description: "Original rules - 3 discards per game, max 3 cards per discard",
+    description: "Only replace played cards - 3 discards per game, max 5 cards per discard",
   },
-  tactical: { name: "Experimental", icon: Shield, description: "Prediction system, armor building, and tactical combat" },
-  recycling: { name: "Redraw", icon: Recycle, description: "Discarded cards return to deck bottom - 150 HP" },
+  tactical: { name: "Tactical", icon: Shield, description: "Prediction system, armor building, and tactical combat" },
+  recycling: { name: "Redraw", icon: Recycle, description: " Discards replenish after 2 turns 500 HP" },
 }
 
 export default function Home() {
@@ -40,9 +40,9 @@ export default function Home() {
   const [player, setPlayer] = useState<{ id: string; name: string } | null>(null)
   const [showCreateRoom, setShowCreateRoom] = useState(false)
   const [currentRoomGameMode, setCurrentRoomGameMode] = useState("classic")
-  //comm
+
   useEffect(() => {
-    const newSocket = io("https://demhan-server.onrender.com")
+    const newSocket = io("http://localhost:4545")
     setSocket(newSocket)
 
     newSocket.on("connect", () => {
@@ -155,7 +155,7 @@ export default function Home() {
         <div className="text-center mb-8">
           <div className="flex items-center justify-center gap-3 mb-4">
             <Crown className="w-12 h-12 text-red-400" />
-            <h1 className="text-4xl md:text-6xl font-bold text-red-400">Demon's Hand</h1>
+            <h1 className="text-4xl md:text-6xl font-bold text-red-400">The Demon's Hand</h1>
           </div>
           <p className="text-gray-300 text-lg">A strategic poker-based combat card game</p>
           <div className="flex items-center justify-center gap-2 mt-2">
