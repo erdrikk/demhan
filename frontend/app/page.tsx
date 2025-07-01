@@ -42,7 +42,7 @@ export default function Home() {
   const [currentRoomGameMode, setCurrentRoomGameMode] = useState("classic")
 
   useEffect(() => {
-    const newSocket = io("http://localhost:4545")
+    const newSocket = io("https://demhan-server-onrender.com")
     setSocket(newSocket)
 
     newSocket.on("connect", () => {
